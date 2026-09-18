@@ -1,4 +1,4 @@
-# 📧 Showcase: Email Auto — Comunicaciones de RRHH personalizadas a escala
+# 📧 Showcase: Email Auto — Comunicaciones de RRHH personalizadas y sin duplicados
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![PyQt6](https://img.shields.io/badge/PyQt6-41CD52?style=for-the-badge&logo=qt&logoColor=white)
@@ -6,7 +6,7 @@
 ![pytest](https://img.shields.io/badge/pytest-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
 ![PyInstaller](https://img.shields.io/badge/PyInstaller-.exe-3776AB?style=for-the-badge)
 
-Este proyecto es una aplicación de escritorio que automatiza las comunicaciones recurrentes de RRHH (bienvenidas, cumpleaños, formación, accesos, uniforme...) personalizándolas por destinatario. Lee los datos del Excel que RRHH ya mantiene, rellena plantillas corporativas de Word, muestra una vista previa fiel de cada correo y los envía desde el propio Outlook del usuario, dejando registro de cada envío.
+Este proyecto es una aplicación de escritorio que automatiza las comunicaciones recurrentes de RRHH (bienvenidas, cumpleaños, formación, accesos, uniforme...) personalizándolas por destinatario. Lee los datos del Excel que RRHH ya mantiene, rellena plantillas corporativas de Word, muestra una vista previa fiel del correo y lo envía desde el propio Outlook del usuario, dejando registrado el envío en el mismo Excel para que nadie reciba dos veces la misma comunicación.
 
 > [!NOTE]
 > **Aviso de Confidencialidad**
@@ -17,21 +17,28 @@ Este proyecto es una aplicación de escritorio que automatiza las comunicaciones
 Las comunicaciones recurrentes de RRHH se repiten cada semana: mismos textos, distinto nombre, distinta fecha. Hacerlo a mano consume horas y produce errores incómodos — el clásico "a María le llegó el correo de Juan". Con esta herramienta:
 
 - Los datos se cargan desde el Excel de siempre, y cada correo se rellena solo con los datos de su destinatario.
-- Antes de enviar nada, se ve el correo **exactamente** como lo recibirá cada persona: su nombre, sus datos, sus adjuntos.
-- Los correos salen desde la cuenta corporativa de Outlook del usuario, como si los hubiera escrito él.
-- Todo queda registrado: qué se envió, a quién y con qué resultado — además de la copia nativa en la carpeta de Enviados.
+- Cada tipo de comunicación es una **campaña** configurable desde la propia app: su plantilla Word, sus adjuntos fijos y su columna de seguimiento en el Excel. RRHH puede crear o borrar campañas sin tocar código.
+- Antes de enviar nada, se ve el correo **exactamente** como lo recibirá la persona: su nombre, sus datos, sus adjuntos.
+- Los correos salen desde el Outlook del usuario (su cuenta o un buzón compartido configurado), con CC por defecto, al email corporativo o al personal según el caso.
+- Todo queda registrado: cada envío se marca en la columna de la campaña dentro del Excel y, si se intenta repetir, la app avisa antes de reenviar — además de la copia nativa en la carpeta de Enviados.
 
 ## 🔄 Flujo de trabajo
 
 ```mermaid
 flowchart TD
-    A[📊 Carga del Excel de RRHH] --> B[📝 Elección de plantilla Word por tipo de comunicación]
-    B --> C{👤 Vista previa por destinatario}
+    S[(📚 Excel maestro de RRHH)] -.->|Sincronización automática| A
+    A[📊 Excel de trabajo] --> B[📝 Campaña: plantilla Word + adjuntos]
+    B --> R[🧑 Selección del destinatario]
+    R --> C{👤 Vista previa del correo}
     C -->|Ajustar plantilla| B
-    C -->|Aprobar| D[📤 Envío en segundo plano vía Outlook]
-    D --> E[📋 Registro del resultado por destinatario]
+    C -->|Aprobar| K{¿Ya recibió esta campaña?}
+    K -->|Sí| W[⚠️ Aviso: cancelar o forzar reenvío]
+    K -->|No| D[📤 Envío en segundo plano vía Outlook]
+    W -->|Forzar| D
+    D --> E[📋 Marca de envío en el Excel]
 
     style C fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style K fill:#ffebee,stroke:#c62828,stroke-width:2px
     style E fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
 ```
 
@@ -53,7 +60,8 @@ graph TD
 
     subgraph negocio [⚙️ services/]
         S1[Servicio de correo · Outlook COM]
-        S2[Servicio de Excel · lectura y validación]
+        S2[Excel · validación, sincronización y tracking]
+        S3[Adjuntos por campaña]
     end
 
     subgraph datos [📐 models/ + infraestructura]
@@ -63,6 +71,7 @@ graph TD
     UI -->|Eventos| C
     C -->|Coordina| S1
     C -->|Coordina| S2
+    C -->|Coordina| S3
     S1 --> M
     S2 --> M
 
@@ -72,15 +81,17 @@ graph TD
 
 1. 🖥️ **GUI (`gui/`)**: solo presentación. Incluye el editor de plantillas con vista previa (conversión `.docx` → HTML con mammoth) y delega toda acción en los controladores.
 2. 🎛️ **Controladores (`controllers/`)**: coordinan el flujo completo — reciben eventos de la GUI, consultan servicios, lanzan el worker de envío y devuelven resultados a pantalla.
-3. ⚙️ **Servicios (`services/`)**: la lógica de negocio — integración con Outlook vía COM y lectura/validación del Excel de destinatarios. Sin dependencias de la GUI: son testeables de forma aislada, y así se testean.
+3. ⚙️ **Servicios y lógica de negocio**: integración con Outlook vía COM (`OutlookService`), validación del Excel de destinatarios, sincronización con el Excel maestro (`ExcelSyncService`), registro de envíos (`TrackingManager`) y gestión de adjuntos por campaña. El `OutlookService` es Python puro, separado del worker de Qt: así se puede *mockear* en los tests sin riesgo de enviar correos reales.
 4. 📐 **Modelos e infraestructura**: estructuras de datos explícitas en lugar de diccionarios sueltos (los errores de forma se detectan pronto) y persistencia JSON de la configuración del usuario, con tests propios.
 
 ## ✨ Características Técnicas Destacadas
 
 *   🔐 **Outlook COM en lugar de SMTP**: el envío se hace a través del cliente Outlook de escritorio (automatización COM con **pywin32**). Las consecuencias de esta decisión son muy valiosas en un entorno corporativo: cero credenciales que almacenar, identidad real del remitente, los envíos quedan en el buzón (auditoría nativa) y se respetan las políticas del tenant sin registrar aplicaciones en Azure.
-*   ⚡ **Envío asíncrono con QThread**: un worker dedicado ejecuta los envíos fuera del hilo de la interfaz, comunicando el progreso mediante señales de Qt. La GUI nunca se congela, ni con lotes grandes — el ordenador sigue siendo usable durante todo el proceso.
+*   🔁 **Idempotencia de envíos**: antes de enviar, la app busca en el Excel si esa persona ya recibió esa campaña. Si es así, muestra un aviso con "Cancelar" como opción por defecto y exige confirmar explícitamente para reenviar. Tras un envío correcto, marca la celda correspondiente, y si el Excel está abierto y bloqueado por otro usuario lo detecta y avisa en lugar de fallar en silencio.
+*   ⚡ **Envío asíncrono con QThread**: un worker dedicado ejecuta el envío fuera del hilo de la interfaz y comunica el progreso y los errores mediante señales de Qt, con el ciclo COM (`CoInitialize` / `CoUninitialize`) bien cerrado en su propio hilo. La GUI nunca se congela mientras Outlook trabaja.
 *   📝 **Plantillas Word propiedad de RRHH**: las plantillas son `.docx` con placeholders (**docxtpl**) que se convierten a HTML de correo con **mammoth**. Quien mantiene los textos es el usuario de negocio, en Word, sin ciclo de desarrollo por medio.
-*   👀 **Vigilancia del Excel en caliente**: un watcher (**watchdog**) detecta modificaciones del archivo mientras la aplicación está abierta, para no trabajar nunca con datos obsoletos. El parseo además tolera las irregularidades típicas de un Excel mantenido a mano.
+*   👀 **Sincronización del Excel en caliente**: un watcher (**watchdog**) vigila el Excel maestro de RRHH y, cuando cambia, cruza sus datos con el Excel de trabajo usando claves primarias (email personal / email corporativo): actualiza registros existentes, inserta altas nuevas y detecta huérfanos, y avisa en pantalla con un resumen de los cambios. El watcher se pausa mientras la app escribe el tracking, para no reaccionar a sus propios cambios. El parseo además normaliza cabeceras y tolera las irregularidades típicas de un Excel mantenido a mano.
+*   📎 **Adjuntos por campaña con límites**: cada campaña guarda sus propios adjuntos (PDF o Excel) en una carpeta de la app, validados por tipo, número máximo de ficheros y tamaño total configurables, para que ningún correo se quede bloqueado en Outlook por exceso de tamaño.
 *   🧪 **Refactor respaldado por tests**: la evolución V0.2 → V2.0.3 (10 builds publicados) se hizo sobre una suite de **19 tests** (pytest) que cubre configuración y su persistencia, el worker de envío, seguridad y el sistema de plantillas — la red que permitió refactorizar sin romper.
 
 ## 📈 Evolución del producto
@@ -95,7 +106,7 @@ graph TD
 
 ## 🚀 Estado del Proyecto
 
-Es la aplicación con más recorrido del portfolio (~3.000 líneas) y un producto maduro en uso interno. Hoy el envío, las plantillas y la configuración están cubiertos por tests. Los siguientes pasos naturales son ampliar la cobertura de tests sobre los controladores y valorar una cola de reintentos para envíos fallidos.
+Es la aplicación con más recorrido del portfolio (~3.000 líneas) y un producto maduro en uso interno. Hoy el envío, las plantillas y la configuración están cubiertos por tests. Los siguientes pasos naturales son ampliar la cobertura de tests sobre los controladores y la sincronización de Excel, añadir el envío por lotes a varios destinatarios en una sola pasada (hoy el flujo es un correo por destinatario, con vista previa y control de duplicados en cada uno) y valorar una cola de reintentos para envíos fallidos.
 
 ---
 
